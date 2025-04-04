@@ -1,68 +1,119 @@
+import 'dart:convert';
+import 'dart:io';
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_ffmpeg/flutter_ffmpeg.dart';
+import 'package:google_speech/google_speech.dart';
+import 'package:http/http.dart' as http;
+import 'package:permission_handler/permission_handler.dart';
 import 'package:vibration/vibration.dart';
 
 void main() {
-  runApp(const MorseVibrationApp());
+  runApp(const SummarizerApp());
 }
 
-class MorseVibrationApp extends StatelessWidget {
-  const MorseVibrationApp({super.key});
+class SummarizerApp extends StatelessWidget {
+  const SummarizerApp({super.key});
 
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Morse Code Vibration',
+      title: 'AI Summarizer & Vibration',
       debugShowCheckedModeBanner: false,
-      theme: ThemeData.light().copyWith(
-        primaryColor: Colors.blueAccent,
-        scaffoldBackgroundColor: Colors.white,
-      ),
-      home: const MorseCodeScreen(),
+      theme: ThemeData.light(),
+      home: const HomePage(),
     );
   }
 }
 
-class MorseCodeScreen extends StatefulWidget {
-  const MorseCodeScreen({super.key});
+class HomePage extends StatelessWidget {
+  const HomePage({super.key});
 
   @override
-  State<MorseCodeScreen> createState() => _MorseCodeScreenState();
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text("AI Assistive App")),
+      body: Center(
+        child: ElevatedButton(
+          onPressed: () => Navigator.push(
+            context,
+            MaterialPageRoute(builder: (_) => const TextSummarizerPage()),
+          ),
+          child: const Text("Text & Video Summarizer"),
+        ),
+      ),
+    );
+  }
 }
 
-class _MorseCodeScreenState extends State<MorseCodeScreen> {
-  final TextEditingController _textController = TextEditingController();
-  final Map<String, String> morseMap = {
-    'A': '.-', 'B': '-...', 'C': '-.-.', 'D': '-..', 'E': '.', 'F': '..-.',
-    'G': '--.', 'H': '....', 'I': '..', 'J': '.---', 'K': '-.-', 'L': '.-..',
-    'M': '--', 'N': '-.', 'O': '---', 'P': '.--.', 'Q': '--.-', 'R': '.-.',
-    'S': '...', 'T': '-', 'U': '..-', 'V': '...-', 'W': '.--', 'X': '-..-',
-    'Y': '-.--', 'Z': '--..', '1': '.----', '2': '..---', '3': '...--',
-    '4': '....-', '5': '.....', '6': '-....', '7': '--...', '8': '---..',
-    '9': '----.', '0': '-----', ' ': ' '  // Space between words
-  };
+class TextSummarizerPage extends StatefulWidget {
+  const TextSummarizerPage({super.key});
 
-  /// Converts text to Morse code
-  String convertToMorse(String text) {
-    return text.toUpperCase().split('').map((char) {
-      return morseMap[char] ?? '';
-    }).join(' ');
+  @override
+  State<TextSummarizerPage> createState() => _TextSummarizerPageState();
+}
+
+class _TextSummarizerPageState extends State<TextSummarizerPage> {
+  final TextEditingController _textController = TextEditingController();
+  String _summary = '';
+  bool _loading = false;
+  final FlutterFFmpeg _ffmpeg = FlutterFFmpeg();
+
+  Future<void> summarizeText(String inputText) async {
+    setState(() => _loading = true);
+    const apiKey = 'YOUR_GEMINI_API_KEY_HERE';
+    const url = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key=$apiKey';
+
+    final response = await http.post(
+      Uri.parse(url),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({"contents": [{"parts": [{"text": "Summarize the following:\n$inputText"}]}]}),
+    );
+
+    if (response.statusCode == 200) {
+      final json = jsonDecode(response.body);
+      final text = json['candidates'][0]['content']['parts'][0]['text'];
+      setState(() => _summary = text);
+    } else {
+      setState(() => _summary = 'Failed to summarize');
+    }
+    setState(() => _loading = false);
   }
 
-  /// Vibrates based on Morse Code pattern
-  Future<void> vibrateMorse(String morse) async {
+  Future<void> pickVideoFile() async {
+    var status = await Permission.storage.request();
+    if (status.isGranted) {
+      FilePickerResult? result = await FilePicker.platform.pickFiles(type: FileType.video);
+      if (result != null) {
+        File videoFile = File(result.files.single.path!);
+        extractAudio(videoFile);
+      }
+    }
+  }
+
+  Future<void> extractAudio(File videoFile) async {
+    String audioPath = videoFile.path.replaceAll('.mp4', '.wav');
+    await _ffmpeg.execute('-i ${videoFile.path} -q:a 0 -map a $audioPath');
+    transcribeAudio(audioPath);
+  }
+
+  Future<void> transcribeAudio(String audioPath) async {
+    final speechToText = GoogleSpeechToText();
+    String transcribedText = await speechToText.transcribeAudio(audioPath);
+    _textController.text = transcribedText;
+    summarizeText(transcribedText);
+  }
+
+  Future<void> vibrateMorse(String text) async {
+    String morse = convertToMorse(text);
     List<int> pattern = [];
-    int dotDuration = 200;  // Duration of a dot
-    int dashDuration = 600; // Duration of a dash
-    int gapBetweenSymbols = 200;
-    int spaceBetweenLetters = 400;
+    int dot = 200, dash = 600, gap = 200, letterGap = 600, wordGap = 1400, sentenceGap = 2000;
 
     for (var symbol in morse.split('')) {
-      if (symbol == '.') {
-        pattern.add(dotDuration);
-      } else if (symbol == '-') {
-        pattern.add(dashDuration);
-      }
-      pattern.add(gapBetweenSymbols); // Gap after dot/dash
+      if (symbol == '.') pattern.add(dot);
+      else if (symbol == '-') pattern.add(dash);
+      else if (symbol == ' ') pattern.add(wordGap);
+      pattern.add(gap);
     }
 
     if (await Vibration.hasVibrator() ?? false) {
@@ -70,42 +121,37 @@ class _MorseCodeScreenState extends State<MorseCodeScreen> {
     }
   }
 
+  String convertToMorse(String text) {
+    final Map<String, String> morseMap = {
+      'A': '.-', 'B': '-...', 'C': '-.-.', 'D': '-..', 'E': '.', 'F': '..-.',
+      'G': '--.', 'H': '....', 'I': '..', 'J': '.---', 'K': '-.-', 'L': '.-..',
+      'M': '--', 'N': '-.', 'O': '---', 'P': '.--.', 'Q': '--.-', 'R': '.-.',
+      'S': '...', 'T': '-', 'U': '..-', 'V': '...-', 'W': '.--', 'X': '-..-',
+      'Y': '-.--', 'Z': '--..', ' ': ' '
+    };
+    return text.toUpperCase().split('').map((char) => morseMap[char] ?? '').join(' ');
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(
-        title: const Text("Morse Code Vibration"),
-        backgroundColor: Colors.blueAccent,
-      ),
+      appBar: AppBar(title: const Text("Summarizer")),
       body: Padding(
-        padding: const EdgeInsets.all(20.0),
+        padding: const EdgeInsets.all(20),
         child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            const Text(
-              "Enter text to convert into Morse Code and feel vibrations:",
-              textAlign: TextAlign.center,
-              style: TextStyle(fontSize: 18),
-            ),
-            const SizedBox(height: 20),
             TextField(
               controller: _textController,
+              maxLines: 6,
               decoration: const InputDecoration(
+                labelText: 'Enter text manually',
                 border: OutlineInputBorder(),
-                labelText: "Enter text",
               ),
             ),
-            const SizedBox(height: 20),
-            ElevatedButton(
-              onPressed: () {
-                String morseCode = convertToMorse(_textController.text);
-                vibrateMorse(morseCode);
-                ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(content: Text("Vibrating Morse: $morseCode")),
-                );
-              },
-              child: const Text("Convert & Vibrate"),
-            ),
+            ElevatedButton(onPressed: pickVideoFile, child: const Text("Upload Video")),
+            ElevatedButton(onPressed: _loading ? null : () => summarizeText(_textController.text), child: _loading ? const CircularProgressIndicator() : const Text("Summarize")),
+            Text(_summary, style: const TextStyle(fontSize: 16)),
+            ElevatedButton(onPressed: () => vibrateMorse(_summary), child: const Text("Translate to Vibration")),
           ],
         ),
       ),
